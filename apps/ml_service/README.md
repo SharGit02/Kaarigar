@@ -1,20 +1,40 @@
 # Kaarigar ML Service
 
-This is `apps/render/` — a small Python microservice living in its own
-top-level folder specifically so a host like Render can be pointed at this
-directory as its root, independently of `apps/web/` (the Next.js app, which
-Vercel points at instead). It's deployed **separately** from the Next.js app
-(Vercel can't run a persistent Python process). It backs two things:
+Python FastAPI microservice in `apps/ml_service/` so a host like Render can
+use this directory as its root, independently of `apps/web/` (Vercel). It
+cannot run on Vercel (no persistent Python process). It backs two things:
 
-1. **`POST /price/predict`** — a scikit-learn model behind the Dynamic
-   Pricing Assistant. Always available once the service boots.
-2. **`POST /asr`** — the third-tier speech-to-text fallback (after Sarvam AI
-   and before the browser's own Web Speech API). Optional: only live if you
-   install `requirements-asr.txt` and set `ASR_MODEL_ID`.
+1. **`POST /price/predict`** — scikit-learn Gradient Boosting regressors for
+   the Dynamic Pricing Assistant. On startup the service trains if
+   `models/pricing_model.joblib` is missing or was pickled with a different
+   scikit-learn version, then caches that file and loads it into memory.
+2. **`POST /asr`** — third-tier speech-to-text fallback (after Sarvam AI,
+   before the browser Web Speech API). Optional: only live if you install
+   `requirements-asr.txt` and set `ASR_MODEL_ID`.
 
 Next.js talks to this via `ML_SERVICE_URL` (see `apps/web/.env.example`) and
-degrades cleanly — to the pricing rules engine, or to Web Speech — whenever
-this service is unreachable or a specific endpoint isn't configured.
+falls back to the pricing rules engine, or Web Speech, when this service is
+unreachable.
+
+## Model and dataset
+
+There is no real marketplace transaction history yet. Training synthesizes
+4,000 rows (400 per craft) from the same category/material/region bands as
+`apps/web/src/infra/db/seed.ts` (`price_reference`), plus noise and
+experience/lead-time adjustments.
+
+| Piece | Detail |
+| --- | --- |
+| Algorithm | Two `GradientBoostingRegressor` pipelines (min price, max price) |
+| Features | category, material, size_band, region, lead_time_days, experience_years |
+| Cache | `models/pricing_model.joblib` (gitignored; created on first start) |
+| Suggested price | Midpoint of predicted min/max |
+
+This is a prior, not market truth. The web app still chains
+`ml_service → rules_engine → optional Gemini`.
+
+To force a retrain, delete `models/pricing_model.joblib` and restart (or run
+`python train.py`).
 
 ## Authentication between the two apps
 
@@ -24,27 +44,24 @@ this service is unreachable or a specific endpoint isn't configured.
 x-internal-api-key: <ML_SERVICE_API_KEY>
 ```
 
-Set the same value for `ML_SERVICE_API_KEY` here (see `.env.example`) and in
-`apps/web`'s env — `apps/web/src/infra/ml/ml-service.client.ts` and
-`indic-service.provider.ts` attach the header automatically whenever it's
-set. Leave both blank for local dev (the check is skipped entirely when
-`ML_SERVICE_API_KEY` is unset here); set both once this service is actually
-deployed and reachable from the internet — otherwise anyone who finds the
-Render URL can call your pricing model for free. `/health` is unauthenticated
-on purpose, for platform health checks.
+Set the same `ML_SERVICE_API_KEY` here and in `apps/web`. Leave both blank
+for local dev (the check is skipped when unset). `/health` stays
+unauthenticated for platform checks and reports `pricing_model_ready`.
 
 ## Local development
 
-```bash
-cd apps/render
+```powershell
+cd apps/ml_service
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python train.py                  # generates models/pricing_model.joblib
 uvicorn app.main:app --reload --port 8000
 ```
 
-Then point the Next.js app at it (in `apps/web/.env.local`):
+The first start trains and writes `models/pricing_model.joblib`. You do not
+need to run `train.py` yourself unless you want to regenerate the cache.
+
+Then in `apps/web/.env.local`:
 
 ```
 ML_SERVICE_URL=http://localhost:8000
@@ -52,43 +69,29 @@ ML_SERVICE_URL=http://localhost:8000
 
 ## Enabling `/asr`
 
-This needs real ASR model weights, which is a materially bigger deploy than
-the pricing endpoint alone:
-
 ```bash
 pip install -r requirements-asr.txt
 export ASR_MODEL_ID=<a Hugging Face Hub checkpoint id>
 ```
 
-`ASR_MODEL_ID` is intentionally left unset by default rather than pointing at
-a specific AI4Bharat checkpoint we can't guarantee is current — pick an
-IndicConformer/IndicWav2Vec (or similar Indic ASR) model from the Hugging
-Face Hub, verify it loads with `transformers.pipeline("automatic-speech-recognition", ...)`,
-and set the env var to that model id. Model weights for a competent Indic ASR
-model typically run into the hundreds of MB to ~1GB, and inference is CPU-slow
-without a GPU — budget a paid Render instance (not the free tier) or a
-Hugging Face Space with persistent storage, not a hobby dyno. Until you do
-this, `/health` reports `"asr_available": false` and `/asr` returns `503`,
-which is exactly the signal the Next.js side uses to skip straight to the
-browser fallback.
+Pick an IndicConformer/IndicWav2Vec (or similar) checkpoint, confirm it
+loads with `transformers.pipeline("automatic-speech-recognition", ...)`, and
+set that id. Weights are large; budget a paid instance. Until then `/health`
+reports `"asr_available": false` and `/asr` returns `503`.
 
 ## Deploying
 
-**Render** (or similar): create the service with **root directory
-`apps/render`**, build command `pip install -r requirements.txt && python
-train.py`, start command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
-Set `ML_SERVICE_API_KEY` (and `ASR_MODEL_ID` if enabling ASR) in the
-service's environment variables — see `.env.example` in this folder.
+**Render:** root directory **`apps/ml_service`**, build
+`pip install -r requirements.txt`, start
+`uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+The first boot trains if the joblib is not already in the image. Set
+`ML_SERVICE_API_KEY` (and `ASR_MODEL_ID` if enabling ASR).
 
-**Docker**: `docker build -t Kaarigar-ml . && docker run -p 8000:8000 -e ML_SERVICE_API_KEY=... Kaarigar-ml`
-— builds the lightweight (pricing-only) image; see the Dockerfile for adding
-the ASR extras.
+**Docker:** `docker build -t kaarigar-ml . && docker run -p 8000:8000 -e ML_SERVICE_API_KEY=... kaarigar-ml`
+— the image trains during `docker build` so containers start with a cache.
 
-## Retraining the pricing model
+## Retraining on real data
 
-`train.py` currently trains on a synthetic dataset shaped by the same price
-bands seeded into Postgres (`src/infra/db/seed.ts`'s `price_reference` rows),
-since there's no real transaction history yet. Once the marketplace has
-enough real order data, replace `synthesize()` with a query against actual
-`orders`/`products` rows and retrain — the API contract (`/price/predict`'s
-request/response shape) doesn't need to change.
+Replace `synthesize()` in `train.py` with a query against `orders` /
+`products` once there is enough history. `/price/predict`'s request/response
+shape does not need to change.

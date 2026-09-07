@@ -11,14 +11,15 @@ rules engine -> Gemini refinement) rather than the sole source of truth —
 it's a reasonable prior, not a fact.
 
 Run: python train.py
-Output: models/pricing_model.joblib
+Output: models/pricing_model.joblib (also trained automatically on service start if missing)
 """
 
 import os
 
 import numpy as np
 import pandas as pd
-from joblib import dump
+import sklearn
+from joblib import dump, load
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.pipeline import Pipeline
@@ -26,6 +27,10 @@ from sklearn.preprocessing import OneHotEncoder
 
 RANDOM_SEED = 42
 rng = np.random.default_rng(RANDOM_SEED)
+
+SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MODEL_PATH = os.path.join(SERVICE_DIR, "models", "pricing_model.joblib")
+SKLEARN_VERSION = sklearn.__version__
 
 # category -> (material, base_min, base_max, region) — mirrors the seed data
 # in src/infra/db/seed.ts, extended to cover every category in
@@ -108,7 +113,7 @@ def build_pipeline() -> Pipeline:
     )
 
 
-def main():
+def train_and_save(model_path: str = DEFAULT_MODEL_PATH) -> str:
     df = synthesize()
     feature_cols = ["category", "material", "size_band", "region", "lead_time_days", "experience_years"]
     X = df[feature_cols]
@@ -116,18 +121,44 @@ def main():
     model_min = build_pipeline().fit(X, df["price_min"])
     model_max = build_pipeline().fit(X, df["price_max"])
 
-    os.makedirs("models", exist_ok=True)
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
     dump(
         {
             "model_min": model_min,
             "model_max": model_max,
             "feature_cols": feature_cols,
             "known_categories": sorted(CATEGORY_BANDS.keys()),
+            "sklearn_version": SKLEARN_VERSION,
         },
-        "models/pricing_model.joblib",
+        model_path,
     )
     print(f"Trained on {len(df)} synthetic rows across {len(CATEGORY_BANDS)} categories.")
-    print("Saved models/pricing_model.joblib")
+    print(f"Saved {model_path}")
+    return model_path
+
+
+def load_cached_model(model_path: str = DEFAULT_MODEL_PATH):
+    """Load a compatible cached joblib, or retrain if missing/stale."""
+    if os.path.exists(model_path):
+        try:
+            bundle = load(model_path)
+            cached_version = bundle.get("sklearn_version") if isinstance(bundle, dict) else None
+            if cached_version == SKLEARN_VERSION:
+                print(f"Using cached pricing model at {model_path}")
+                return bundle
+            print(
+                f"Cached model sklearn {cached_version!r} != runtime {SKLEARN_VERSION!r} — retraining."
+            )
+        except Exception as err:
+            print(f"Cached pricing model unreadable ({err}) — retraining.")
+    else:
+        print(f"No cached pricing model at {model_path} — training now.")
+    train_and_save(model_path)
+    return load(model_path)
+
+
+def main():
+    train_and_save()
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ const schema = z.object({
   SARVAM_API_KEY: z.string().optional(),
 
   // --- Python ML microservice (AI4Bharat ASR fallback + sklearn pricing) ---
-  // Deployed separately (apps/render/) — ML_SERVICE_API_KEY is the shared
+  // Deployed separately (apps/ml_service/) — ML_SERVICE_API_KEY is the shared
   // secret both sides must agree on so the ML service can reject requests
   // that didn't come from this app.
   ML_SERVICE_URL: z.string().url().optional(),

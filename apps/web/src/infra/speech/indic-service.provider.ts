@@ -3,10 +3,10 @@ import { env } from "@/config/env"
 import type { SpeechProvider } from "@/core/business/ports"
 
 /**
- * Fallback tier: our own Python microservice (`apps/render/`), running
+ * Fallback tier: our own Python microservice (`apps/ml_service/`), running
  * AI4Bharat IndicConformer. Only reachable when ML_SERVICE_URL is set and
  * that service is actually deployed (it can't run on Vercel) — see
- * `apps/render/README.md`.
+ * `apps/ml_service/README.md`.
  */
 export const indicServiceSpeechProvider: SpeechProvider = {
   name: "indic_service",

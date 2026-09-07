@@ -105,9 +105,10 @@ cd apps/ml_service
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python train.py
 uvicorn app.main:app --reload --port 8000
 ```
+
+First start trains the sklearn pricing model and caches `models/pricing_model.joblib`. Later starts reuse that file.
 
 Set `ML_SERVICE_URL=http://localhost:8000` in `apps/web/.env.local`. If PowerShell blocks activation: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`.
 

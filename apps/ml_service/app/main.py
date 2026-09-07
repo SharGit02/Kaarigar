@@ -2,8 +2,9 @@
 Kaarigar ML microservice.
 
 Two independent capabilities, each degrading gracefully on its own:
-  - POST /price/predict  — always available once the service boots; the
-    scikit-learn pricing model (see train.py) loads lazily on first request.
+  - POST /price/predict  — sklearn pricing model. On boot, trains if the
+    cached joblib is missing or pickled with a different scikit-learn
+    version, then keeps it in memory.
   - POST /asr            — AI4Bharat-style ASR fallback tier, only available
     if the optional `transformers`/`torch` deps are installed (see
     requirements-asr.txt) AND ASR_MODEL_ID is set. Otherwise returns 503 so
@@ -15,21 +16,37 @@ Vercel, which can't run a persistent Python process. See README.md.
 
 import io
 import os
+import sys
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Kaarigar ML Service", version="1.0.0")
+SERVICE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if SERVICE_DIR not in sys.path:
+    sys.path.insert(0, SERVICE_DIR)
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "pricing_model.joblib")
+from train import DEFAULT_MODEL_PATH, load_cached_model
+
+MODEL_PATH = DEFAULT_MODEL_PATH
 ASR_MODEL_ID = os.environ.get("ASR_MODEL_ID")  # e.g. an AI4Bharat IndicWav2Vec/IndicConformer checkpoint
 
 # Shared secret with the Next.js app (apps/web/src/infra/ml/ml-service.client.ts).
 # Left unset in local dev to keep curl/Swagger testing frictionless; require it
 # once this is actually deployed and reachable from the internet.
 INTERNAL_API_KEY = os.environ.get("ML_SERVICE_API_KEY")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    get_pricing_model.cache_clear()
+    get_pricing_model()
+    yield
+
+
+app = FastAPI(title="Kaarigar ML Service", version="1.0.0", lifespan=lifespan)
 
 
 def require_internal_api_key(x_internal_api_key: Optional[str] = Header(default=None)):
@@ -39,13 +56,7 @@ def require_internal_api_key(x_internal_api_key: Optional[str] = Header(default=
 
 @lru_cache(maxsize=1)
 def get_pricing_model():
-    from joblib import load
-
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            f"{MODEL_PATH} not found — run `python train.py` first to generate it."
-        )
-    return load(MODEL_PATH)
+    return load_cached_model(MODEL_PATH)
 
 
 @lru_cache(maxsize=1)
@@ -84,21 +95,28 @@ class PricePredictResponse(BaseModel):
 
 @app.get("/health")
 def health():
+    pricing_ready = False
+    try:
+        get_pricing_model()
+        pricing_ready = True
+    except Exception:
+        pricing_ready = False
+
     asr_available = False
     try:
         get_asr_pipeline()
         asr_available = True
     except Exception:
         asr_available = False
-    return {"status": "ok", "asr_available": asr_available}
+    return {"status": "ok", "pricing_model_ready": pricing_ready, "asr_available": asr_available}
 
 
 @app.post("/price/predict", response_model=PricePredictResponse, dependencies=[Depends(require_internal_api_key)])
 def predict_price(req: PricePredictRequest):
     try:
         bundle = get_pricing_model()
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Pricing model unavailable: {e}") from e
 
     import pandas as pd
 

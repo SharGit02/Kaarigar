@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY train.py .
 COPY app ./app
 
+# Optional image-layer cache; startup also trains if this file is missing.
 RUN mkdir -p models && python train.py
 
 EXPOSE 8000

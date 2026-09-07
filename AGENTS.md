@@ -9,7 +9,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 ## Project Structure
 
 - **`apps/web/`** - Next.js 16 app (App Router, Turbopack) - primary web application
-- **`apps/render/`** - Python/FastAPI ML service - separate microservice
+- **`apps/ml_service/`** - Python/FastAPI ML service - separate microservice
 - **`apps/mobile/`** - React Native/Expo app - mobile application
 
 Each app is independently deployable. Commands below assume you're in `apps/web/` unless specified.
@@ -84,8 +84,9 @@ All integrations optional - app boots with zero keys configured:
 
 ## Pricing System
 
-- Python scikit-learn model → deterministic rules engine → optional Gemini refinement
-- Rules engine always runs (zero-API fallback)
+- Python scikit-learn Gradient Boosting (min/max) → deterministic rules engine → optional Gemini refinement
+- ML service trains a synthetic dataset on first start and caches `models/pricing_model.joblib`
+- Rules engine always runs if the ML service is down (zero-API fallback)
 - Reference bands from seeded `price_reference` data
 
 ## Admin Access
@@ -97,7 +98,7 @@ All integrations optional - app boots with zero keys configured:
 ## Deployment
 
 - **Web app**: Vercel (root: `apps/web`)
-- **ML service**: Render/Fly/Docker host (root: `apps/render`)
+- **ML service**: Render/Fly/Docker host (root: `apps/ml_service`)
 - Set matching `ML_SERVICE_API_KEY` on both sides for inter-service auth
 
 ## Mobile App (Future)
